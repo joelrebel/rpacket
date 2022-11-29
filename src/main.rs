@@ -1,72 +1,67 @@
 use std::process::ExitCode;
 
-use pcap::{Active, Capture, Inactive};
+use tokio::sync::mpsc;
 
-fn main() -> ExitCode {
-    let devices = pcap::Device::list();
+#[derive(Debug)]
+struct PacketData {
+    header: pcap::PacketHeader,
+    data: Vec<u8>,
+}
 
-    // initialize mutable variable encapsulated in Option
-    // so its value can be None or Some.
-    let mut listen_device: Option<&pcap::Device> = None;
+#[tokio::main]
+async fn main() -> ExitCode {
+    let mut capturer = rpacket::new_capturer();
 
-    for device in devices.iter() {
-        for interface in device.iter() {
-            if interface.name == "en7" {
-                listen_device = Some(interface);
+    let interface_name: &str = "en7";
+
+    match capturer.new(interface_name) {
+        Ok(pcap_device) => {
+            println!("listening on {}", interface_name);
+
+            let (tx, mut rx) = mpsc::channel(100);
+
+            match capturer.open(&pcap_device) {
+                Ok(device) => {
+                    // capture packets
+                    tokio::spawn(async move { capture(device, tx.clone()) });
+                }
+                Err(e) => {
+                    print!("{}", e);
+                    return ExitCode::FAILURE;
+                }
+            }
+
+            // collect packets
+            while let Some(packet) = rx.recv().await {
+                println!("{:?}", packet)
             }
         }
-    }
+        Err(e) => {
+            println!("{}", e.cause);
 
-    match listen_device {
-        Some(listen_device) => {
-            println!(
-                "listening on {}, {:?}",
-                listen_device.name.as_str(),
-                listen_device.addresses,
-            );
-
-            return capture(listen_device);
-        }
-        None => {
-            println!("no matching capture device interface found");
             return ExitCode::FAILURE;
         }
     }
-}
-
-// creates a capture for a device interface
-fn capture(device: &pcap::Device) -> ExitCode {
-    let _ = match pcap::Capture::from_device(device.name.as_str()) {
-        Ok(capture) => activate_capture(capture),
-        Err(e) => {
-            println!("error in capture from_device {}", e.to_string());
-            return ExitCode::FAILURE;
-        }
-    };
-
     return ExitCode::SUCCESS;
 }
 
-// opens the the capture
-fn activate_capture(capture: Capture<Inactive>) -> ExitCode {
-    let _ = match capture.immediate_mode(true).promisc(true).open() {
-        Ok(capture) => read_packets(capture),
-        Err(e) => {
-            println!("error in activate_capture {}", e.to_string());
-            return ExitCode::FAILURE;
+async fn capture(mut device: pcap::Capture<pcap::Active>, channel: mpsc::Sender<PacketData>) {
+    while let Ok(packet) = device.next_packet() {
+        let mut count = 0;
+        let max_count = 10;
+
+        print!("got packet!");
+        // https://users.rust-lang.org/t/how-to-put-pcap-packets-into-a-vec-packet/41105
+
+        let data = PacketData {
+            header: packet.header.clone(),
+            data: Vec::from(packet.data), // [u8] converted to vector to store in a struct
+        };
+
+        match channel.send(data).await {
+            Ok(_s) => (),
+            Err(e) => print!("error sending packet {}", e),
         }
-    };
-
-    return ExitCode::SUCCESS;
-}
-
-// reads packets
-fn read_packets(mut capture: Capture<Active>) {
-    let mut count = 0;
-    let max_count = 10;
-
-    while let Ok(packet) = capture.next_packet() {
-        println!("{:?}", packet);
 
         count += 1;
         if count >= max_count {
