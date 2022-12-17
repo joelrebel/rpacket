@@ -7,4 +7,6 @@ edition = "2021"
 
 [dependencies]
 pcap = "0.11.0"
-tokio = { version = "1", features = ["full"] }
+clap = { version = "4.0", features = ["derive"] }
+pnet = { version = "0.31.0", features = ["std"] }
+
