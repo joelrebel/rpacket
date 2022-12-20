@@ -1,5 +1,5 @@
 extern crate pnet;
-use std::{fmt, net::IpAddr};
+use std::{fmt, net::IpAddr, sync::mpsc};
 
 use pnet::{
     datalink::NetworkInterface,
@@ -14,8 +14,9 @@ use pnet::{
 
 #[derive(Debug)]
 pub struct PacketData {
-    pub header: pcap::PacketHeader,
-    pub data: Vec<u8>,
+    pub source: IpAddr,
+    pub dst: IpAddr,
+    pub protocol: String,
 }
 
 pub struct CapturerError {
@@ -39,10 +40,11 @@ impl fmt::Display for CapturerError {
 pub struct Capturer {
     rx: Box<dyn pnet::datalink::DataLinkReceiver>,
     interface: NetworkInterface,
+    packet_channel: mpsc::Sender<PacketData>,
 }
 
 impl Capturer {
-    pub fn new(interface_name: &str) -> Capturer {
+    pub fn open(interface_name: &str, packet_channel: mpsc::Sender<PacketData>) -> Capturer {
         // closure for filter
         let match_filter = |iface: &pnet::datalink::NetworkInterface| iface.name == interface_name;
 
@@ -73,6 +75,7 @@ impl Capturer {
         return Self {
             rx: rx,
             interface: interface,
+            packet_channel: packet_channel,
         };
     }
 
@@ -94,7 +97,7 @@ impl Capturer {
                         fake_ethernet_frame.set_ethertype(pnet::packet::ethernet::EtherTypes::Ipv4);
                         fake_ethernet_frame.set_payload(&packet[payload_offset..]);
 
-                        Self::handle_ethernet_frame(&self.interface, &fake_ethernet_frame);
+                        self.handle_ethernet_frame(&fake_ethernet_frame);
                         continue;
                     }
                 }
@@ -104,13 +107,12 @@ impl Capturer {
         }
     }
 
-    fn handle_ethernet_frame(interface: &NetworkInterface, ethernet: &MutableEthernetPacket) {
-        let interface_name = &interface.name[..];
+    fn handle_ethernet_frame(self: &mut Self, ethernet: &MutableEthernetPacket) {
         match ethernet.get_ethertype() {
-            EtherTypes::Ipv4 => Self::handle_ipv4_packet(interface_name, ethernet),
+            EtherTypes::Ipv4 => self.handle_ipv4_packet(ethernet),
             _ => println!(
                 "{}: Unknown packet: {} > {}; ethertype: {:?} length: {}",
-                interface_name,
+                self.interface.name,
                 ethernet.get_source(),
                 ethernet.get_destination(),
                 ethernet.get_ethertype(),
@@ -119,52 +121,62 @@ impl Capturer {
         }
     }
 
-    fn handle_ipv4_packet(interface_name: &str, ethernet: &MutableEthernetPacket) {
+    fn handle_ipv4_packet(self: &mut Self, ethernet: &MutableEthernetPacket) {
         let header = Ipv4Packet::new(ethernet.payload());
 
         if let Some(header) = header {
-            Self::handle_transport_protocol(
-                interface_name,
+            self.handle_transport_protocol(
                 IpAddr::V4(header.get_source()),
                 IpAddr::V4(header.get_destination()),
                 header.get_next_level_protocol(),
                 header.payload(),
             )
         } else {
-            println!("{}: Malformed IPv4 packet", interface_name)
+            println!("{}: Malformed IPv4 packet", self.interface.name)
         }
     }
 
     fn handle_transport_protocol(
-        interface_name: &str,
+        self: &mut Self,
         source: IpAddr,
         destination: IpAddr,
         protocol: IpNextHeaderProtocol,
         packet: &[u8],
     ) {
         match protocol {
-            IpNextHeaderProtocols::Tcp => {
-                Self::handle_tcp_packet(interface_name, source, destination, packet)
-            }
+            IpNextHeaderProtocols::Tcp => self.handle_tcp_packet(source, destination, packet),
 
             _ => {}
         }
     }
 
-    fn handle_tcp_packet(interface_name: &str, source: IpAddr, destination: IpAddr, packet: &[u8]) {
+    fn handle_tcp_packet(self: &mut Self, source: IpAddr, destination: IpAddr, packet: &[u8]) {
         let tcp = TcpPacket::new(packet);
         if let Some(tcp) = tcp {
-            println!(
-                "{}: TCP packet: {}:{} > {}:{}; length: {}",
-                interface_name,
-                source,
-                tcp.get_source(),
-                destination,
-                tcp.get_destination(),
-                packet.len()
-            );
+            //println!(
+            //    "{}: TCP packet: {}:{} > {}:{}; length: {}",
+            //    self.interface.name,
+            //    source,
+            //    tcp.get_source(),
+            //    destination,
+            //    tcp.get_destination(),
+            //    packet.len()
+            //);
+
+            let d = PacketData {
+                source: source,
+                dst: destination,
+                protocol: "TCP".to_string(),
+            };
+
+            match self.packet_channel.send(d) {
+                Ok(_) => {}
+                Err(e) => {
+                    println!("packet send failed: {}", e);
+                }
+            }
         } else {
-            println!("{}: malformed TCP packet", interface_name)
+            println!("{}: malformed TCP packet", self.interface.name)
         }
     }
 }

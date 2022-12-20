@@ -9,4 +9,5 @@ edition = "2021"
 pcap = "0.11.0"
 clap = { version = "4.0", features = ["derive"] }
 pnet = { version = "0.31.0", features = ["std"] }
-
+tokio = { version = "1", features = ["full"] }
+crossterm = "0.25.0"
