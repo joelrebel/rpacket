@@ -1,5 +1,6 @@
 extern crate pnet;
-use std::{fmt, net::IpAddr, sync::mpsc};
+use crossbeam_channel::Sender;
+use std::{fmt, net::IpAddr};
 
 use pnet::{
     datalink::NetworkInterface,
@@ -23,14 +24,6 @@ pub struct CapturerError {
     pub cause: String,
 }
 
-impl CapturerError {
-    fn new(cause: &str) -> CapturerError {
-        return CapturerError {
-            cause: cause.to_string(),
-        };
-    }
-}
-
 impl fmt::Display for CapturerError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "error in packet capture: {}", self.cause)
@@ -40,20 +33,37 @@ impl fmt::Display for CapturerError {
 pub struct Capturer {
     rx: Box<dyn pnet::datalink::DataLinkReceiver>,
     interface: NetworkInterface,
-    packet_channel: mpsc::Sender<PacketData>,
+    packet_channel: Sender<PacketData>,
 }
 
 impl Capturer {
-    pub fn open(interface_name: &str, packet_channel: mpsc::Sender<PacketData>) -> Capturer {
+    pub fn open(
+        interface_name: &str,
+        packet_channel: Sender<PacketData>,
+    ) -> Result<Capturer, CapturerError> {
         // closure for filter
         let match_filter = |iface: &pnet::datalink::NetworkInterface| iface.name == interface_name;
 
-        let interface = pnet::datalink::interfaces()
+        let capture_interface = pnet::datalink::interfaces()
             .into_iter()
             .filter(match_filter)
             .next()
-            .unwrap_or_else(|| panic!("No such network interface: {}", interface_name));
+            .ok_or_else(|| CapturerError {
+                cause: format!("No such network interface: {}", interface_name),
+            });
 
+        // TODO: fix me
+        let interface = match capture_interface {
+            Ok(interface) => interface,
+            Err(e) => {
+                return Err(CapturerError {
+                    cause: e.to_string(),
+                })
+            }
+        };
+
+        println!("listening on interface: {}", interface_name);
+        //
         // https://github.com/libpnet/libpnet/blob/master/pnet_datalink/src/lib.rs#L157
         let config = pnet::datalink::Config {
             write_buffer_size: 4096,
@@ -68,15 +78,23 @@ impl Capturer {
 
         let (_, rx) = match pnet::datalink::channel(&interface, config) {
             Ok(pnet::datalink::Channel::Ethernet(tx, rx)) => (tx, rx),
-            Ok(_) => panic!("unhandled channel type"),
-            Err(e) => panic!("open: unable to create datalink channel: {}", e),
+            Ok(_) => {
+                return Err(CapturerError {
+                    cause: "unhandled channel type".to_string(),
+                })
+            }
+            Err(e) => {
+                return Err(CapturerError {
+                    cause: e.to_string(),
+                })
+            }
         };
 
-        return Self {
+        Ok(Self {
             rx: rx,
             interface: interface,
             packet_channel: packet_channel,
-        };
+        })
     }
 
     pub fn capture(self: &mut Self) {

@@ -1,5 +1,5 @@
 #### collection
- - runs async, returns packet data on a channel
+ - switch to crossbeam for channels 
  - output in tcpdump format
  - reload based on filter
 
@@ -8,5 +8,5 @@
 
 - key modifiers
  - q should stop collection and exit
- - p should pause collection 
+ - p should pause collection
  - f should pop up filter dialog
