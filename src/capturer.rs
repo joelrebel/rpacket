@@ -1,5 +1,5 @@
 extern crate pnet;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use std::{fmt, net::IpAddr};
 
 use pnet::{
@@ -18,6 +18,11 @@ pub struct PacketData {
     pub source: IpAddr,
     pub dst: IpAddr,
     pub protocol: String,
+}
+
+pub struct PacketFilter {
+    pub source: IpAddr,
+    pub dst: IpAddr,
 }
 
 pub struct CapturerError {
@@ -97,7 +102,7 @@ impl Capturer {
         })
     }
 
-    pub fn capture(self: &mut Self) {
+    pub fn capture(self: &mut Self, exit_channel: Receiver<bool>) {
         loop {
             let mut buf: [u8; 1600] = [0u8; 1600];
             let mut fake_ethernet_frame = MutableEthernetPacket::new(&mut buf[..]).unwrap();
@@ -121,6 +126,11 @@ impl Capturer {
                 }
 
                 Err(e) => panic!("capture error: {}", e),
+            }
+
+            match exit_channel.try_recv() {
+                Ok(_) => break,
+                Err(_) => continue,
             }
         }
     }
